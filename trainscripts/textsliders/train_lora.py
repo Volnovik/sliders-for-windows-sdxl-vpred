@@ -13,6 +13,8 @@ from tqdm import tqdm
 
 
 from lora import LoRANetwork, DEFAULT_TARGET_REPLACE, UNET_TARGET_REPLACE_MODULE_CONV
+from sai_model_spec import build_metadata
+import time
 import train_util
 import model_util
 import prompt_util
@@ -29,12 +31,7 @@ def flush():
     gc.collect()
 
 
-def train(
-    config: RootConfig,
-    prompts: list[PromptSettings],
-    device: int
-):
-    
+def train(config: RootConfig, prompts: list[PromptSettings], device: int):
     metadata = {
         "prompts": ",".join([prompt.json() for prompt in prompts]),
         "config": config.json(),
@@ -51,6 +48,16 @@ def train(
     if config.logging.use_wandb:
         wandb.init(project=f"LECO_{config.save.name}", config=metadata)
 
+    metadata.update(
+        build_metadata(
+            v2=config.pretrained_model.v2,
+            v_parameterization=config.pretrained_model.v_pred,
+            sdxl=False,
+            timestamp=time.time(),
+            title="textsliders",
+        )
+    )
+
     weight_dtype = config_util.parse_precision(config.train.precision)
     save_weight_dtype = config_util.parse_precision(config.train.precision)
 
@@ -59,13 +66,16 @@ def train(
         scheduler_name=config.train.noise_scheduler,
         v2=config.pretrained_model.v2,
         v_pred=config.pretrained_model.v_pred,
+        weight_dtype = weight_dtype,
+        variant= "fp16" if weight_dtype == torch.float16 else None
     )
 
     text_encoder.to(device, dtype=weight_dtype)
     text_encoder.eval()
 
     unet.to(device, dtype=weight_dtype)
-    unet.enable_xformers_memory_efficient_attention()
+    if config.other.use_xformers:
+        unet.enable_xformers_memory_efficient_attention()
     unet.requires_grad_(False)
     unet.eval()
 
@@ -78,15 +88,17 @@ def train(
     ).to(device, dtype=weight_dtype)
 
     optimizer_module = train_util.get_optimizer(config.train.optimizer)
-    #optimizer_args
+    # optimizer_args
     optimizer_kwargs = {}
     if config.train.optimizer_args is not None and len(config.train.optimizer_args) > 0:
         for arg in config.train.optimizer_args.split(" "):
             key, value = arg.split("=")
             value = ast.literal_eval(value)
             optimizer_kwargs[key] = value
-            
-    optimizer = optimizer_module(network.prepare_optimizer_params(), lr=config.train.lr, **optimizer_kwargs)
+
+    optimizer = optimizer_module(
+        network.prepare_optimizer_params(), lr=config.train.lr, **optimizer_kwargs
+    )
     lr_scheduler = train_util.get_lr_scheduler(
         config.train.lr_scheduler,
         optimizer,
@@ -118,9 +130,9 @@ def train(
                 print(prompt)
                 if isinstance(prompt, list):
                     if prompt == settings.positive:
-                        key_setting = 'positive'
+                        key_setting = "positive"
                     else:
-                        key_setting = 'attributes'
+                        key_setting = "attributes"
                     if len(prompt) == 0:
                         cache[key_setting] = []
                     else:
@@ -187,7 +199,7 @@ def train(
                 print("batch_size:", prompt_pair.batch_size)
 
             latents = train_util.get_initial_latents(
-                noise_scheduler, prompt_pair.batch_size, height, width, 1
+                noise_scheduler, prompt_pair.batch_size, height, width, 1, device
             ).to(device, dtype=weight_dtype)
 
             with network:
@@ -225,7 +237,7 @@ def train(
                 ),
                 guidance_scale=1,
             ).to(device, dtype=weight_dtype)
-             
+
             neutral_latents = train_util.predict_noise(
                 unet,
                 noise_scheduler,
@@ -250,8 +262,7 @@ def train(
                 ),
                 guidance_scale=1,
             ).to(device, dtype=weight_dtype)
-            
-            
+
             #########################
             if config.logging.verbose:
                 print("positive_latents:", positive_latents[0, 0, :5, :5])
@@ -271,7 +282,7 @@ def train(
                 ),
                 guidance_scale=1,
             ).to(device, dtype=weight_dtype)
-            
+
             #########################
 
             if config.logging.verbose:
@@ -287,7 +298,7 @@ def train(
             neutral_latents=neutral_latents,
             unconditional_latents=unconditional_latents,
         )
-             
+
         # 1000倍しないとずっと0.000...になってしまって見た目的に面白くない
         pbar.set_description(f"Loss*1k: {loss.item()*1000:.4f}")
         if config.logging.use_wandb:
@@ -305,6 +316,7 @@ def train(
             unconditional_latents,
             target_latents,
             latents,
+            denoised_latents,
         )
         flush()
 
@@ -316,15 +328,17 @@ def train(
             print("Saving...")
             save_path.mkdir(parents=True, exist_ok=True)
             network.save_weights(
-                save_path / f"{config.save.name}_{i}steps.pt",
+                save_path / f"{config.save.name}_{i}steps.safetensors",
                 dtype=save_weight_dtype,
+                metadata=metadata,
             )
 
     print("Saving...")
     save_path.mkdir(parents=True, exist_ok=True)
     network.save_weights(
-        save_path / f"{config.save.name}_last.pt",
+        save_path / f"{config.save.name}_last.safetensors",
         dtype=save_weight_dtype,
+        metadata=metadata,
     )
 
     del (
@@ -348,7 +362,7 @@ def main(args):
         config.save.name = args.name
     attributes = []
     if args.attributes is not None:
-        attributes = args.attributes.split(',')
+        attributes = args.attributes.split(",")
         attributes = [a.strip() for a in attributes]
 
     if args.prompts_file is not None:
@@ -366,7 +380,7 @@ def main(args):
     print(prompts)
     device = torch.device(f"cuda:{args.device}")
     train(config, prompts, device)
-    
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -421,9 +435,9 @@ if __name__ == "__main__":
         default=None,
         help="attritbutes to disentangle (comma seperated string)",
     )
-    
+
     # --attributes 'male, female'
-    
+
     args = parser.parse_args()
 
     main(args)

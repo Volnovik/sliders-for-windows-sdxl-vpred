@@ -5,24 +5,24 @@ pretrained_model:
   v_pred: true # true if model uses v-prediction
 network:
   type: "c3lier" # or "c3lier" or "lierla"
-  rank: 128
-  alpha: 1.0
-  training_method: "content" # full, selfattn, xattn, noxattn, or innoxattn
+  rank: 8
+  alpha: 2.0
+  training_method: "noxattn" # full, selfattn, xattn, noxattn, or innoxattn
 train:
-  precision: "float16"
+  precision: "bfloat16"
   noise_scheduler: "ddim" # or "ddpm", "lms", "euler_a"
-  iterations: 2000
-  lr: 0.0002
-  optimizer: "Adam8bit" # or "AdamW", "Adam", "AdamW8bit"
-  lr_scheduler: "cosine_with_restarts"
+  iterations: 1000
+  lr: 0.0001
+  optimizer: "AdamW" # or "AdamW", "Adam", "AdamW8bit"
+  lr_scheduler: "constant"
   max_denoising_steps: 50
 save:
   name: "temp"
   path: "./models"
-  per_steps: 400
+  per_steps: 30
   precision: "float16"
 logging:
   use_wandb: false
-  verbose: true
+  verbose: false
 other:
   use_xformers: true

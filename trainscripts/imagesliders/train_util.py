@@ -1,12 +1,14 @@
 from typing import Optional, Union
-
+import cv2
+import numpy as np
+from PIL import Image
 import torch
 
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import UNet2DConditionModel, SchedulerMixin
 from diffusers.image_processor import VaeImageProcessor
 from model_util import SDXL_TEXT_ENCODER_TYPE
-from diffusers.utils import randn_tensor
+from diffusers.utils.torch_utils import randn_tensor
 
 from tqdm import tqdm
 
@@ -19,7 +21,7 @@ UNET_PROJECTION_CLASS_EMBEDDING_INPUT_DIM = 2816
 
 
 def get_random_noise(
-    batch_size: int, height: int, width: int, generator: torch.Generator = None
+    batch_size: int, height: int, width: int, device: torch.device, generator: torch.Generator = None
 ) -> torch.Tensor:
     return torch.randn(
         (
@@ -28,8 +30,8 @@ def get_random_noise(
             height // VAE_SCALE_FACTOR,  # 縦と横これであってるのかわからないけど、どっちにしろ大きな問題は発生しないのでこれでいいや
             width // VAE_SCALE_FACTOR,
         ),
-        generator=generator,
-        device="cpu",
+        device=device,
+        generator=generator
     )
 
 
@@ -40,20 +42,20 @@ def apply_noise_offset(latents: torch.FloatTensor, noise_offset: float):
     )
     return latents
 
-
 def get_initial_latents(
     scheduler: SchedulerMixin,
     n_imgs: int,
     height: int,
     width: int,
     n_prompts: int,
-    generator=None,
+    device: torch.device,
+    generator=None
 ) -> torch.Tensor:
-    noise = get_random_noise(n_imgs, height, width, generator=generator).repeat(
+    noise = get_random_noise(n_imgs, height, width, device, generator=generator).repeat(
         n_prompts, 1, 1, 1
     )
 
-    latents = noise * scheduler.init_noise_sigma
+    latents = noise * torch.tensor(scheduler.init_noise_sigma).to(device)
 
     return latents
 
@@ -218,6 +220,9 @@ def get_noisy_image(
     device = vae.device
     image = image_processor.preprocess(image).to(device)
 
+    # 将图像转换为与 VAE 模型权重相同的类型
+    image = image.to(vae.dtype)
+
     init_latents = vae.encode(image).latent_dist.sample(None)
     init_latents = vae.config.scaling_factor * init_latents
 
@@ -264,7 +269,7 @@ def predict_noise_xl(
     text_embeddings: torch.FloatTensor,  # uncond な text embed と cond な text embed を結合したもの
     add_text_embeddings: torch.FloatTensor,  # pooled なやつ
     add_time_ids: torch.FloatTensor,
-    guidance_scale=7.5,
+    guidance_scale=5.5,
     guidance_rescale=0.7,
 ) -> torch.FloatTensor:
     # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
@@ -291,10 +296,11 @@ def predict_noise_xl(
         noise_pred_text - noise_pred_uncond
     )
 
-    # https://github.com/huggingface/diffusers/blob/7a91ea6c2b53f94da930a61ed571364022b21044/src/diffusers/pipelines/stable_diffusion_xl/pipeline_stable_diffusion_xl.py#L775
-    noise_pred = rescale_noise_cfg(
-        noise_pred, noise_pred_text, guidance_rescale=guidance_rescale
-    )
+    if guidance_rescale > 0.0:
+        # https://github.com/huggingface/diffusers/blob/7a91ea6c2b53f94da930a61ed571364022b21044/src/diffusers/pipelines/stable_diffusion_xl/pipeline_stable_diffusion_xl.py#L775
+        guided_target = rescale_noise_cfg(
+            guided_target, noise_pred_text, guidance_rescale=guidance_rescale
+        )
 
     return guided_target
 
@@ -456,3 +462,64 @@ def get_random_resolution_in_bucket(bucket_resolution: int = 512) -> tuple[int, 
     width = torch.randint(min_step, max_step, (1,)).item() * step
 
     return height, width
+
+def bucket_resolution(bucket_resolution: int, img_resolution: tuple[int, int], multiple: int = 64) -> tuple[int, int]:
+    max_resolution = int(bucket_resolution * 1.5)
+    min_resolution = bucket_resolution // 2
+
+    img_width, img_height = img_resolution
+
+    # 检查图片分辨率是否在分桶范围内
+    if min_resolution <= img_height <= max_resolution and min_resolution <= img_width <= max_resolution:
+        return img_height, img_width
+
+    # 计算等比例缩放后的分辨率
+    aspect_ratio = img_width / img_height
+
+    if img_width > img_height:
+        new_width = max_resolution
+        new_height = int(new_width / aspect_ratio)
+    else:
+        new_height = max_resolution
+        new_width = int(new_height * aspect_ratio)
+
+    # 确保分辨率是 multiple 的整数倍
+    new_height = (new_height // multiple) * multiple
+    new_width = (new_width // multiple) * multiple
+
+    return new_height, new_width
+
+def align_images(img1, img2, width, height):
+    # 调整图像大小
+    img2_resized = img2.resize((width, height),resample=Image.LANCZOS)
+    img1_resized = img1.resize(img2.size, Image.LANCZOS)
+ 
+    # 转换为OpenCV格式
+    img1_cv = cv2.cvtColor(np.array(img1_resized), cv2.COLOR_RGB2GRAY)
+    img2_cv = cv2.cvtColor(np.array(img2_resized), cv2.COLOR_RGB2GRAY)
+
+    # 使用ORB特征检测器
+    orb = cv2.ORB_create(nfeatures=300,scoreType=cv2.ORB_FAST_SCORE)
+    keypoints1, descriptors1 = orb.detectAndCompute(img1_cv, None)
+    keypoints2, descriptors2 = orb.detectAndCompute(img2_cv, None)
+
+    # 特征匹配
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(descriptors1, descriptors2)
+    matches = sorted(matches, key=lambda x: x.distance)
+
+    # 选取好的匹配点
+    good_matches = matches[:min(len(matches), 50)]
+
+    # 获取匹配点的坐标
+    src_pts = np.float32([keypoints1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([keypoints2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+    # 计算变换矩阵
+    M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+    # 应用变换
+    height, width = img2_cv.shape
+    aligned_img1 = cv2.warpPerspective(np.array(img1_resized), M, (width, height))
+
+    return Image.fromarray(aligned_img1), img2_resized
