@@ -1,4 +1,9 @@
 # Concept Sliders
+
+This is a forked quinglong branch of sliders-windows modified to run with sdxl v-pred models. Original had that code ommited for sdxl. Basically added passing v_pred to schedulers and specify guidance rescale value. Tested on imagesliders and text sliders.
+
+To start it had to update diffusers, xformers, torch etc after installation, since original is a bit behind and diffusers were not happy with that.
+
 ###  [Project Website](https://sliders.baulab.info) | [Arxiv Preprint](https://arxiv.org/pdf/2311.12092.pdf) | [Trained Sliders](https://sliders.baulab.info/weights/xl_sliders/) | [Colab Demo](https://colab.research.google.com/github/rohitgandikota/sliders/blob/main/demo_concept_sliders.ipynb) | [Huggingface Demo](https://huggingface.co/spaces/baulab/ConceptSliders) <br>
 Official code implementation of "Concept Sliders: LoRA Adaptors for Precise Control in Diffusion Models", European Conference on Computer Vision (ECCV 2024).
 
