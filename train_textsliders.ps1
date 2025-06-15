@@ -7,13 +7,13 @@ $sd_version = "sdxl_lora"
 $train_mode = "text"
 
 #output name
-$name = "ageslider"
+$name = "contrastslider_vp1_reverse"
 
 # Train data config | 设置训练配置路径
 $config_file = "./trainscripts/textsliders/data/config-xl.yaml" # config path | 配置路径
 
 # main body attributes| 主体属性
-$attributes = 'male, female'
+$attributes = ''
 
 #LoRA rank and alpha
 $rank = 4

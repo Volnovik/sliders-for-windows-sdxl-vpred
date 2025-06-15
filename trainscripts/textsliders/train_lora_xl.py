@@ -240,7 +240,6 @@ def train(
                     start_timesteps=0,
                     total_timesteps=timesteps_to,
                     guidance_scale=3,
-                    guidance_rescale=guidance_rescale,
                 )
 
             noise_scheduler.set_timesteps(1000)

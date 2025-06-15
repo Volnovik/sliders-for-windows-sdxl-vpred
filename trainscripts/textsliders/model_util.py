@@ -246,6 +246,7 @@ def load_checkpoint_model_xl(
 def load_models_xl(
     pretrained_model_name_or_path: str,
     scheduler_name: AVAILABLE_SCHEDULERS,
+    v_pred: bool = False,
     weight_dtype: torch.dtype = torch.float32,
     variant: Optional[str] = None,
 ) -> tuple[
